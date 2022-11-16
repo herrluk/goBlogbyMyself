@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,26 +24,25 @@ type ArticlesFormData struct {
 	Errors      map[string]string
 }
 
-func checkError(err error) {
-	if err != nil {
-		fmt.Println(err)
-	}
+type Article struct {
+	Title, Body string
+	ID          int64
 }
 
 func initDB() {
-	var err error
 
+	var err error
 	config := mysql.Config{
-		User:                 "root",
-		Passwd:               "12345678",
-		Addr:                 "127.0.0.1:3306",
+		User:                 "luk",
+		Passwd:               "lhy19951001",
+		Addr:                 "101.42.166.212:3306",
 		Net:                  "tcp",
-		DBName:               "goblog",
+		DBName:               "goBlog",
 		AllowNativePasswords: true,
 	}
 
 	// 准备数据库连接池
-	db, err := sql.Open("mysql", config.FormatDSN())
+	db, err = sql.Open("mysql", config.FormatDSN())
 	checkError(err)
 	// 设置最大连接数
 	db.SetMaxOpenConns(25)
@@ -59,6 +59,12 @@ func initDB() {
 
 }
 
+func checkError(err error) {
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
 func homeHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "<h1>Hello, 欢迎来到 管理系统！</h1>")
 }
@@ -71,9 +77,31 @@ func notFoundHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "<h1>请求页面未找到 :(</h1><p>如有疑惑，请联系我们。</p>")
 }
 func articlesShowHandler(w http.ResponseWriter, r *http.Request) {
+	//  1. 获取 URL 参数
 	vars := mux.Vars(r)
 	id := vars["id"]
-	fmt.Fprint(w, "文章 ID："+id)
+
+	// 2. 读取对应的文章数据
+	article := Article{}
+	query := "SELECT * FROM articles WHERE id = ?"
+	err := db.QueryRow(query, id).Scan(&article.ID, &article.Title, &article.Body)
+
+	// 如果出现错误
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 3.1 数据未找到
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, "404 文章未找到")
+		} else {
+			// 3.2 数据库错误
+			checkError(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "500 服务器内部错误")
+		}
+	} else {
+		// 4. 读取成功
+		fmt.Fprint(w, "读取成功，文章标题 —— "+article.Title)
+	}
 }
 
 func articlesIndexHandler(w http.ResponseWriter, r *http.Request) {
@@ -97,14 +125,20 @@ func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
 	// 验证内容
 	if body == "" {
 		errors["body"] = "内容不能为空"
-	} else if len(body) < 10 {
+	} else if utf8.RuneCountInString(body) < 10 {
 		errors["body"] = "内容长度需大于或等于 10 个字节"
 	}
 
 	// 检查是否有错误
 	if len(errors) == 0 {
-		//lastInsertID, err := saveArticleToDB(title, body)
-
+		lastInsertID, err := saveArticleToDB(title, body)
+		if lastInsertID > 0 {
+			fmt.Fprint(w, "插入成功，ID 为"+strconv.FormatInt(lastInsertID, 10))
+		} else {
+			checkError(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "500 服务器内部错误")
+		}
 	} else {
 
 		storeURL, _ := router.Get("articles.store").URL()
@@ -115,7 +149,6 @@ func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
 			storeURL,
 			errors,
 		}
-
 		tmpl, err := template.ParseFiles("resources/views/articles/create.gohtml")
 		if err != nil {
 			panic(err)
@@ -129,6 +162,7 @@ func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func saveArticleToDB(title string, body string) (int64, error) {
+
 	// 变量初始化
 	var (
 		id   int64
@@ -159,8 +193,8 @@ func saveArticleToDB(title string, body string) (int64, error) {
 		return id, nil
 	}
 	return 0, err
-
 }
+
 func forceHTMLMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. 设置标头
@@ -232,6 +266,11 @@ func main() {
 
 	// MiddleWare: force content type is HTML
 	router.Use(forceHTMLMiddleware)
+	// 通过命名路由获取 URL 示例
+	homeURL, _ := router.Get("home").URL()
+	fmt.Println("homeURL: ", homeURL)
+	articleURL, _ := router.Get("articles.show").URL("id", "1")
+	fmt.Println("articleURL: ", articleURL)
 
 	err := http.ListenAndServe(":3000", removeTrailingSlash(router))
 	if err != nil {
